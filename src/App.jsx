@@ -36,6 +36,21 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
+function toTitleLabel(value) {
+  if (!value) return "-";
+  return String(value)
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatMaybeNumber(value, digits = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return value ?? "-";
+  return num.toFixed(digits);
+}
+
 function buildPolylinePoints(series, key, height, width, min, max) {
   if (!series.length) return "";
   const range = max - min || 1;
@@ -46,6 +61,18 @@ function buildPolylinePoints(series, key, height, width, min, max) {
       return `${x},${Number.isFinite(y) ? y : height}`;
     })
     .join(" ");
+}
+
+function buildConicGradient(data, colors) {
+  const total = data.reduce((sum, item) => sum + item.value, 0) || 1;
+  let current = 0;
+  const segments = data.map((item, index) => {
+    const from = (current / total) * 360;
+    current += item.value;
+    const to = (current / total) * 360;
+    return `${colors[index % colors.length]} ${from}deg ${to}deg`;
+  });
+  return `conic-gradient(${segments.join(", ")})`;
 }
 
 export default function App() {
@@ -136,6 +163,50 @@ export default function App() {
       riskMin,
       riskMax,
     };
+  }, [historyItems]);
+  const latestHistoryItem = useMemo(() => {
+    if (!historyItems.length) return null;
+    return historyItems[0];
+  }, [historyItems]);
+  const latestInsights = latestHistoryItem?.insights ?? null;
+  const topRiskDrivers = Array.isArray(latestInsights?.top_risk_drivers)
+    ? latestInsights.top_risk_drivers
+    : [];
+  const recommendations = Array.isArray(latestInsights?.recommendations)
+    ? latestInsights.recommendations
+    : [];
+  const simulatedPrediction = latestInsights?.simulated_improved_prediction ?? null;
+  const insightDelta = useMemo(() => {
+    if (!latestHistoryItem || !simulatedPrediction) return null;
+    const currentScore = Number(latestHistoryItem.predicted_exam_score) || 0;
+    const currentRisk = Number(latestHistoryItem.risk_score) || 0;
+    const simulatedScore = Number(simulatedPrediction.predicted_exam_score) || 0;
+    const simulatedRisk = Number(simulatedPrediction.risk_score) || 0;
+    return {
+      currentScore,
+      currentRisk,
+      simulatedScore,
+      simulatedRisk,
+      scoreDelta: simulatedScore - currentScore,
+      riskDelta: simulatedRisk - currentRisk,
+    };
+  }, [latestHistoryItem, simulatedPrediction]);
+  const passFailDistribution = useMemo(() => {
+    const counts = historyItems.reduce((acc, item) => {
+      const key = String(item?.predicted_pass_fail || "Unknown");
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const colors = {
+      Pass: "#68bf84",
+      Fail: "#e65c63",
+      Unknown: "#b7a08d",
+    };
+    return Object.entries(counts).map(([label, value]) => ({
+      label,
+      value,
+      color: colors[label] || "#f08a4b",
+    }));
   }, [historyItems]);
 
   async function handleSubmit(event) {
@@ -463,6 +534,161 @@ export default function App() {
                         </article>
                       </div>
 
+                      <section className="insights-engine-card">
+                        <div className="chart-header">
+                          <h4>AI Insights (Latest Record)</h4>
+                        </div>
+                        {latestInsights ? (
+                          <div className="insights-engine-grid">
+                            <article className="insight-block metric-focus">
+                              <h5>Predicted Score (higher is better)</h5>
+                              {insightDelta ? (
+                                <div className="improved-metrics single-metric">
+                                  <div className="metric-values">
+                                    <span>
+                                      <small>Current</small>
+                                      <strong>{formatScore(insightDelta.currentScore, 2)}</strong>
+                                    </span>
+                                    <span className="metric-arrow">{"->"}</span>
+                                    <span>
+                                      <small>Predicted</small>
+                                      <strong>{formatScore(insightDelta.simulatedScore, 2)}</strong>
+                                    </span>
+                                  </div>
+                                  <em
+                                    className={
+                                      insightDelta.scoreDelta >= 0 ? "trend-up-color" : "trend-down-color"
+                                    }
+                                  >
+                                    {insightDelta.scoreDelta >= 0 ? "+" : ""}
+                                    {formatScore(insightDelta.scoreDelta, 3)} expected
+                                  </em>
+                                </div>
+                              ) : (
+                                <p className="modal-note">No simulated projection available.</p>
+                              )}
+                            </article>
+
+                            <article className="insight-block metric-focus">
+                              <h5>Risk Score (lower is better)</h5>
+                              {insightDelta ? (
+                                <div className="improved-metrics single-metric">
+                                  <div className="metric-values">
+                                    <span>
+                                      <small>Current</small>
+                                      <strong>{formatScore(insightDelta.currentRisk, 3)}</strong>
+                                    </span>
+                                    <span className="metric-arrow">{"->"}</span>
+                                    <span>
+                                      <small>Predicted</small>
+                                      <strong>{formatScore(insightDelta.simulatedRisk, 3)}</strong>
+                                    </span>
+                                  </div>
+                                  <em
+                                    className={
+                                      insightDelta.riskDelta <= 0 ? "trend-up-color" : "trend-down-color"
+                                    }
+                                  >
+                                    {insightDelta.riskDelta >= 0 ? "+" : ""}
+                                    {formatScore(insightDelta.riskDelta, 4)} expected
+                                  </em>
+                                </div>
+                              ) : (
+                                <p className="modal-note">No simulated projection available.</p>
+                              )}
+                            </article>
+
+                            <article className="insight-block full-width">
+                              <h5>Top Risk Drivers</h5>
+                              {topRiskDrivers.length ? (
+                                <div className="driver-list">
+                                  {topRiskDrivers.map((item, index) => (
+                                    <div
+                                      className="driver-row"
+                                      key={`${item.feature || "feature"}-${index}`}
+                                    >
+                                      <span className="driver-name">{toTitleLabel(item.feature)}</span>
+                                      <div className="driver-track">
+                                        <div
+                                          className="driver-fill"
+                                          style={{
+                                            width: `${Math.min(
+                                              100,
+                                              Math.max(0, Number(item.contribution_percent) || 0)
+                                            )}%`,
+                                          }}
+                                        />
+                                      </div>
+                                      <strong>{formatScore(item.contribution_percent || 0, 1)}%</strong>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="modal-note">No risk driver data available.</p>
+                              )}
+                            </article>
+
+                          </div>
+                        ) : (
+                          <p className="modal-note">Insights not available for this history record.</p>
+                        )}
+                      </section>
+
+                      <section className="insight-block full-width">
+                        <h5>Recommended Actions</h5>
+                        {recommendations.length ? (
+                          <div className="recommendation-list">
+                            {recommendations.map((item, index) => (
+                              <div
+                                className="recommendation-item"
+                                key={`${item.feature || "recommendation"}-${index}`}
+                              >
+                                <div className="recommendation-top">
+                                  <strong>{index + 1}. Improve {toTitleLabel(item.feature)}</strong>
+                                  <span className="recommendation-change">
+                                    Current: {formatMaybeNumber(item.current, 2)} {"->"} Target:{" "}
+                                    {formatMaybeNumber(item.suggested, 2)}
+                                  </span>
+                                </div>
+                                <div className="recommendation-impact">
+                                  <span>Expected impact</span>
+                                  <div className="impact-values">
+                                    <p>
+                                      Score
+                                      <strong
+                                        className={
+                                          Number(item.expected_score_change) >= 0
+                                            ? "trend-up-color"
+                                            : "trend-down-color"
+                                        }
+                                      >
+                                        {Number(item.expected_score_change) >= 0 ? "+" : ""}
+                                        {formatScore(item.expected_score_change || 0, 4)}
+                                      </strong>
+                                    </p>
+                                    <p>
+                                      Risk
+                                      <strong
+                                        className={
+                                          Number(item.expected_risk_change) <= 0
+                                            ? "trend-up-color"
+                                            : "trend-down-color"
+                                        }
+                                      >
+                                        {Number(item.expected_risk_change) >= 0 ? "+" : ""}
+                                        {formatScore(item.expected_risk_change || 0, 4)}
+                                      </strong>
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="modal-note">No recommendations available.</p>
+                        )}
+                      </section>
+
                       <div className="chart-card">
                         <div className="chart-header">
                           <h4>Predicted Score Trend</h4>
@@ -482,23 +708,55 @@ export default function App() {
                         </p>
                       </div>
 
-                      <div className="chart-card">
-                        <div className="chart-header">
-                          <h4>Risk Score Trend</h4>
-                          <p>Lower values indicate better stability</p>
+                      <div className="dual-chart-row">
+                        <div className="chart-card passfail-card">
+                          <div className="chart-header">
+                            <h4>Pass vs Fail</h4>
+                            <p>Distribution across history records</p>
+                          </div>
+                          {passFailDistribution.length ? (
+                            <div className="donut-layout">
+                              <div
+                                className="donut-plot"
+                                style={{
+                                  background: buildConicGradient(
+                                    passFailDistribution,
+                                    passFailDistribution.map((item) => item.color)
+                                  ),
+                                }}
+                              />
+                              <div className="donut-legend">
+                                {passFailDistribution.map((item) => (
+                                  <p key={item.label}>
+                                    <span className="legend-dot" style={{ background: item.color }} />
+                                    {item.label}: <strong>{item.value}</strong>
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="modal-note">No pass/fail distribution available.</p>
+                          )}
                         </div>
-                        <svg className="trend-svg risk-svg" viewBox="0 0 700 150" preserveAspectRatio="none">
-                          <polyline
-                            fill="none"
-                            stroke="#e65c63"
-                            strokeWidth="3"
-                            points={chartModel.riskPoints}
-                          />
-                        </svg>
-                        <p className="chart-meta">
-                          Min: {formatScore(chartModel.riskMin, 3)} | Max:{" "}
-                          {formatScore(chartModel.riskMax, 3)}
-                        </p>
+
+                        <div className="chart-card">
+                          <div className="chart-header">
+                            <h4>Risk Score Trend</h4>
+                            <p>Lower values indicate better stability</p>
+                          </div>
+                          <svg className="trend-svg risk-svg" viewBox="0 0 700 150" preserveAspectRatio="none">
+                            <polyline
+                              fill="none"
+                              stroke="#e65c63"
+                              strokeWidth="3"
+                              points={chartModel.riskPoints}
+                            />
+                          </svg>
+                          <p className="chart-meta">
+                            Min: {formatScore(chartModel.riskMin, 3)} | Max:{" "}
+                            {formatScore(chartModel.riskMax, 3)}
+                          </p>
+                        </div>
                       </div>
 
                       <div className="table-wrap">
